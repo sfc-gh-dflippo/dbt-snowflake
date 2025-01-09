@@ -96,6 +96,8 @@ class SnowflakeCredentials(Credentials):
     private_key_path: Optional[str] = None
     private_key_passphrase: Optional[str] = None
     token: Optional[str] = None
+    token_file_path: Optional[str] = None
+    connection_name: Optional[str] = None
     oauth_client_id: Optional[str] = None
     oauth_client_secret: Optional[str] = None
     query_tag: Optional[str] = None
@@ -133,8 +135,19 @@ class SnowflakeCredentials(Credentials):
                     )
                 )
 
-            if not self.user:
-                # The user attribute is only optional if 'authenticator' is 'jwt' or 'oauth'
+            if self.authenticator not in ["oauth"]:
+                if self.token_file_path:
+                    warn_or_error(
+                        AdapterEventWarning(
+                            base_msg=(
+                                "The token_file_path parameter was set, but the authenticator was not set to 'oauth'."
+                            )
+                        )
+                    )
+
+            if not (self.user or self.connection_name):
+                # The user attribute is only optional if 'authenticator' is 'jwt' or 'oauth',
+                # or if using a connection_name with a connections.toml file
                 warn_or_error(
                     AdapterEventError(base_msg="Invalid profile: 'user' is a required property.")
                 )
@@ -179,12 +192,16 @@ class SnowflakeCredentials(Credentials):
             "retry_all",
             "insecure_mode",
             "reuse_connections",
+            "token_file_path",
+            "connection_name",
         )
 
     def auth_args(self):
         # Pull all of the optional authentication args for the connector,
         # let connector handle the actual arg validation
         result = {}
+        if self.connection_name:
+            result["connection_name"] = self.connection_name
         if self.user:
             result["user"] = self.user
         if self.password:
@@ -202,25 +219,29 @@ class SnowflakeCredentials(Credentials):
         if self.authenticator:
             result["authenticator"] = self.authenticator
             if self.authenticator == "oauth":
-                token = self.token
-                # if we have a client ID/client secret, the token is a refresh
-                # token, not an access token
-                if self.oauth_client_id and self.oauth_client_secret:
-                    token = self._get_access_token()
-                elif self.oauth_client_id:
-                    warn_or_error(
-                        AdapterEventWarning(
-                            base_msg="Invalid profile: got an oauth_client_id, but not an oauth_client_secret!"
+                # If the token_file_path is provided we ignore the token parameter
+                if self.token_file_path:
+                    result["token_file_path"] = self.token_file_path
+                else:
+                    token = self.token
+                    # if we have a client ID/client secret, the token is a refresh
+                    # token, not an access token
+                    if self.oauth_client_id and self.oauth_client_secret:
+                        token = self._get_access_token()
+                    elif self.oauth_client_id:
+                        warn_or_error(
+                            AdapterEventWarning(
+                                base_msg="Invalid profile: got an oauth_client_id, but not an oauth_client_secret!"
+                            )
                         )
-                    )
-                elif self.oauth_client_secret:
-                    warn_or_error(
-                        AdapterEventWarning(
-                            base_msg="Invalid profile: got an oauth_client_secret, but not an oauth_client_id!"
+                    elif self.oauth_client_secret:
+                        warn_or_error(
+                            AdapterEventWarning(
+                                base_msg="Invalid profile: got an oauth_client_secret, but not an oauth_client_id!"
+                            )
                         )
-                    )
 
-                result["token"] = token
+                    result["token"] = token
 
             elif self.authenticator == "jwt":
                 # If authenticator is 'jwt', then the 'token' value should be used
